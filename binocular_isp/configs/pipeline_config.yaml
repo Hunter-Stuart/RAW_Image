@@ -1,0 +1,48 @@
+﻿# ============================================================================
+# E-SIP Binocular ISP Pipeline - 管线配置
+# ============================================================================
+
+isp:
+  # RAW 参数
+  black_level: 512
+  white_level: 16383
+  bayer_pattern: "RGGB"
+
+  # 去马赛克方法: opencv, bilinear, malvar
+  demosaic_method: "opencv"
+
+  # sRGB 色彩处理
+  srgb:
+    do_gamma: true
+    gamma: 2.2
+    do_tone_map: true
+    exposure_bias: 0.0
+    contrast: 1.0
+    brightness: 0.0
+    saturation: 1.0
+
+  # 去噪（可选）
+  denoise:
+    method: "none"       # none, bilateral, nlm, median, gaussian
+    strength: 1.0
+
+  # 锐化（可选）
+  sharpen:
+    method: "none"       # none, unsharp, laplacian
+    strength: 0.0
+
+# 输出配置
+output:
+  width: 1280
+  height: 720
+  bit_depth: 8           # 8 或 16
+  format: "png"          # png, jpg, tiff
+  color_space: "sRGB"
+
+# 双目配置
+stereo:
+  enabled: true
+  rectify: true          # 是否做去畸变+极线校正
+  alpha: 0.0             # 校正裁剪系数 (0=最大有效区域)
+  consistency_check: true
+  wb_strategy: "average" # left, right, average, conservative
