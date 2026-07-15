@@ -1,0 +1,67 @@
+=== 文档2 第5页 ===
+平台架构。部署方式与开放集成
+feslBs
+Camera Frontend SDK 既可独立部署,
+也可与 E-SIP 生态中的
+Sensorkit, Mapping Factory  Locate, Scene Understanding.
+Interaction, MapOps Cloud. Synthetic Data Factory 等平台协同工作。
+MapOps Cloud
+Synthetic Data Factory
+场晨数据库 /版本服务
+虚拟数据与仿真联动
+输入侧
+下游调用方
+E-SIP Camera Frontend SDK
+相机传感器
+Mapping Factory
+镜头 /快门
+0
+Locate SDK
+场景感知
+任务策略
+相机控制
+Scene
+RAW 数据
+Understanding SDK
+同步与时间源
+Interaction SDK
+RAW 处理
+ISP 优化
+质星评测
+:
+任务配置 /策酪
+可视化与调试工具
+端侧机器人 /相机模组部署
+私有化边缘节点
+联合定制
+轻量集成
+数据本地可控
+任务策酪定制
+边缫实时运行
+日志回放
+ISP 参数方案
+适配移动机器人
+质星看板
+多相机协同
+开放与兼容
+SD
+API
+ROS 接口
+参数配置
+日志回放
+可规化工具
+Dataset Ewport
+可独立部署
+可平台协同
+可标准集成
+可持续演进
+SDK 完整闭环,开箱即用,
+与 E-SIP 生态平台无缝协同,
+提供标:崔接口与工具龌
+持续升级与生态共
+快速落地。
+构建完蹩数据闭环。
+轻松对接多种系g。
+面向末来不断进化。
+05
+平台架构与开放集成

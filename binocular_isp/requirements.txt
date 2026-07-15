@@ -1,0 +1,16 @@
+﻿# E-SIP Binocular ISP Pipeline
+# RAW → sRGB 图像处理管线
+# 面向双目3D目标检测的下游任务
+
+# 核心依赖
+numpy>=1.24.0
+opencv-python>=4.8.0
+rawpy>=0.18.0          # RAW文件读取（封装LibRaw）
+PyYAML>=6.0            # 配置文件解析
+
+# 开发/调试工具
+tqdm                    # 进度条
+matplotlib              # 可视化调试
+
+# 测试
+pytest>=7.0.0
