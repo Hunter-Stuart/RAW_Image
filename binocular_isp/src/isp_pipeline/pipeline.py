@@ -150,10 +150,19 @@ class ISPPipeline:
         """
         raw_data, metadata = read_raw_file(raw_path, bayer_pattern)
 
-        # 从元数据提取色彩矩阵
+        # 从元数据提取色彩矩阵。
+        # 实测 rawpy 0.27 的 rgb_xyz_matrix 为 XYZ→camera 方向（DNG ColorMatrix 约定，
+        # 与 camera_whitebalance 乘数互逆），取逆得到 camera RGB → XYZ
         color_matrix = None
-        if 'rgb_camera_matrix' in metadata:
-            color_matrix = np.array(metadata['rgb_camera_matrix'])
+        if 'rgb_xyz_matrix' in metadata:
+            M = np.array(metadata['rgb_xyz_matrix'], dtype=np.float64)
+            color_matrix = np.linalg.inv(M).astype(np.float32)
+
+        # 优先使用相机白平衡乘数（rgb_xyz_matrix 按相机WB后的值定义），缺失时回退灰世界
+        if wb_gains is None and 'camera_wb' in metadata:
+            wb = np.asarray(metadata['camera_wb'], dtype=np.float64)
+            if wb[1] > 0:
+                wb_gains = tuple(wb / wb[1])
 
         result = self.process(
             raw_data, metadata=metadata,
@@ -166,19 +175,23 @@ class ISPPipeline:
 
     def process_bayer_data(self, bayer_data: np.ndarray,
                            white_level: int = 16383,
-                           bayer_pattern: str = 'RGGB') -> np.ndarray:
+                           bayer_pattern: str = 'RGGB',
+                           black_level: Optional[int] = None) -> np.ndarray:
         """
         处理外部提供的 Bayer 数据（非 rawpy 读取）
         用于直接从传感器接收 Bayer 数据的场景
+        black_level: None 时沿用管线配置（uint8 数据应显式传 0）
         """
         # 设置正确的白电平
         if white_level != self.preprocessor.white_level:
             self.preprocessor.white_level = white_level
 
         # 模拟元数据
+        if black_level is None:
+            black_level = self.preprocessor.black_level
         metadata = {
             'white_level': white_level,
-            'black_level': self.preprocessor.black_level,
+            'black_level': black_level,
         }
 
         return self.process(bayer_data, metadata=metadata, bayer_pattern=bayer_pattern)

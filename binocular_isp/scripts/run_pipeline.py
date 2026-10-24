@@ -30,12 +30,12 @@ def parse_args():
                         help='右相机 RAW 文件路径或目录')
     parser.add_argument('--output', type=str, default='data/output',
                         help='输出目录 (默认: data/output)')
-    parser.add_argument('--config', type=str, default='configs/pipeline_config.yaml',
-                        help='管线配置文件路径')
-    parser.add_argument('--cam-left', type=str, default='configs/camera_left.yaml',
-                        help='左相机参数文件')
-    parser.add_argument('--cam-right', type=str, default='configs/camera_right.yaml',
-                        help='右相机参数文件')
+    parser.add_argument('--config', type=str, default='pipeline_config.yaml',
+                        help='管线配置文件（相对 configs/ 目录）')
+    parser.add_argument('--cam-left', type=str, default='camera_left.yaml',
+                        help='左相机参数文件（相对 configs/ 目录）')
+    parser.add_argument('--cam-right', type=str, default='camera_right.yaml',
+                        help='右相机参数文件（相对 configs/ 目录）')
     parser.add_argument('--rectify', action='store_true',
                         help='启用去畸变和极线校正')
     parser.add_argument('--check-consistency', action='store_true',
@@ -162,17 +162,23 @@ def main():
         print("加载标定参数...")
         left_cam = config_loader.load_camera_config('left', args.cam_left)
         right_cam = config_loader.load_camera_config('right', args.cam_right)
-        
+
+        # 加载双目外参配置
+        stereo_config = config_loader.load('stereo_calibration.yaml')
+        stereo_extrinsics = stereo_config.get('stereo_extrinsics', {})
+
         calib = StereoCalibration(
             left_camera_matrix=config_loader.config_to_camera_matrix(left_cam),
             left_dist_coeffs=config_loader.config_to_dist_coeffs(left_cam),
             right_camera_matrix=config_loader.config_to_camera_matrix(right_cam),
             right_dist_coeffs=config_loader.config_to_dist_coeffs(right_cam),
-            rotation_matrix=np.eye(3, dtype=np.float64),
-            translation_vector=np.zeros((3, 1), dtype=np.float64),
+            rotation_matrix=ConfigLoader.config_to_rotation(stereo_extrinsics),
+            translation_vector=ConfigLoader.config_to_translation(stereo_extrinsics),
             image_size=(left_cam.get('resolution', [1280, 720])[0],
                        left_cam.get('resolution', [1280, 720])[1]),
         )
+        print("读取的 T 向量:", calib.translation_vector)
+        print("读取的 R 矩阵:\n", calib.rotation_matrix)
         rectifier = StereoRectifier(calib)
         if calib.validate():
             print("  标定参数已加载")

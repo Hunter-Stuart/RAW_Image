@@ -263,9 +263,13 @@ class StereoCalibrator:
         return True
 
     def save_yaml(self, path: str, baseline_mm: Optional[float] = None):
-        """保存双目标定结果"""
+        """
+        保存双目标定结果。
+        注意单位: OpenCV 的 T 与物体点单位一致（本项目棋盘格为 mm），
+        而项目 YAML 约定 translation_vector 为米，此处做 mm→m 换算。
+        """
         if baseline_mm is None:
-            baseline_mm = float(np.linalg.norm(self.T) * 1000)
+            baseline_mm = float(np.linalg.norm(self.T))
 
         data = {
             "baseline_mm": baseline_mm,
@@ -281,7 +285,7 @@ class StereoCalibrator:
             },
             "stereo_extrinsics": {
                 "rotation_matrix": self.R.tolist(),
-                "translation_vector": self.T.flatten().tolist(),
+                "translation_vector": (self.T.flatten() / 1000.0).tolist(),  # mm → 米
             },
         }
 
