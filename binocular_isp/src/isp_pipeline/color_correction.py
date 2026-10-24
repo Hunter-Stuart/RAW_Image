@@ -174,12 +174,14 @@ class ColorCorrector:
         """
         一键色彩校正：色彩矩阵 → sRGB → Gamma → 色调映射
         """
-        # 色彩矩阵
-        if color_matrix is not None or self.color_matrix is not None:
-            rgb = self.apply_color_matrix(rgb, color_matrix)
-
-        # 转换到 sRGB
-        srgb = self.convert_to_srgb(rgb)
+        # 色彩矩阵：传入的 color_matrix 视为 camera RGB → XYZ（rawpy 的 rgb_xyz_matrix），
+        # 走 camera→XYZ→sRGB 标准链路；构造时设置的 self.color_matrix 视为 camera→sRGB，直接应用
+        if color_matrix is not None:
+            srgb = self.convert_to_srgb(rgb, color_matrix_cam_to_xyz=color_matrix)
+        elif self.color_matrix is not None:
+            srgb = np.clip(self.apply_color_matrix(rgb, None), 0, 1)
+        else:
+            srgb = self.convert_to_srgb(rgb)
 
         # 确保范围 [0, 1]
         srgb = np.clip(srgb, 0, 1)

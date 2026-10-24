@@ -1,0 +1,32 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+binocular_isp/data/output/
+binocular_isp/data/output_video/
+binocular_isp/data/input/
+binocular_isp/data/test_*.mp4
+binocular_isp/data/bus.jpg
+binocular_isp/configs/kitti/
+binocular_isp/data/synthetic_checkerboard/calibration_result.yaml
+*.pt
+*.log
+
+# 大型公开数据集（仓库根目录，防止误提交上百GB文件）
+/AODRaw*
+/data_scene_flow*
+/bus.jpg
+/runs/
+/SpinnakerSDK*
+/spinnaker_python*
+
+# 数据传输临时产物
+/part_*
+/AODRaw_images.tar.gz
+/*.md5
+
+# 个人实验脚本与测试图（不入库）
+/infer.py
+/fix_yaml.py
+/00000111*.jpg
+/00000111*.JPG
+分割上传/

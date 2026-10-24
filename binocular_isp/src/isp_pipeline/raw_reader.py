@@ -63,11 +63,12 @@ class RAWReader:
 
         meta = {}
         try:
-            # 黑电平
+            # 黑电平（rawpy 新版本可能返回 list 而非 ndarray，统一用 np.asarray 兼容）
             black_level = self._raw_object.black_level_per_channel
             if black_level is not None:
-                meta['black_level'] = int(np.mean(black_level))
-                meta['black_level_per_channel'] = black_level.tolist()
+                bl = np.asarray(black_level)
+                meta['black_level'] = int(np.mean(bl))
+                meta['black_level_per_channel'] = bl.tolist()
 
             # 白电平（饱和值）
             white_level = self._raw_object.white_level
@@ -77,20 +78,20 @@ class RAWReader:
             # 相机白平衡
             cam_wb = self._raw_object.camera_whitebalance
             if cam_wb is not None:
-                meta['camera_wb'] = cam_wb.tolist()
+                meta['camera_wb'] = np.asarray(cam_wb).tolist()
 
             #  daylight 白平衡
             day_wb = self._raw_object.daylight_whitebalance
             if day_wb is not None:
-                meta['daylight_wb'] = day_wb.tolist()
+                meta['daylight_wb'] = np.asarray(day_wb).tolist()
 
-            # 色彩矩阵
-            rgb_cam = self._raw_object.rgb_camera
-            if rgb_cam is not None:
-                meta['rgb_camera_matrix'] = rgb_cam.tolist()
+            # 色彩矩阵（rawpy 0.27 起提供 rgb_xyz_matrix: camera RGB → XYZ，4x3 末行全0）
+            rgb_xyz = self._raw_object.rgb_xyz_matrix
+            if rgb_xyz is not None:
+                meta['rgb_xyz_matrix'] = np.asarray(rgb_xyz)[:3, :3].tolist()
 
-            # 相机型号
-            meta['camera_model'] = str(self._raw_object.camera_model or '')
+            # 相机型号（rawpy 0.27 起无 camera_model 属性，用 getattr 兜底）
+            meta['camera_model'] = str(getattr(self._raw_object, 'camera_model', '') or '')
 
             # RAW 图像尺寸
             meta['raw_size'] = (
@@ -98,18 +99,23 @@ class RAWReader:
                 int(self._raw_object.raw_image_visible.shape[0])
             )
 
-            # Bayer 模式
-            meta['bayer_pattern'] = self._raw_object.color_desc.decode('utf-8') if hasattr(self._raw_object, 'color_desc') and self._raw_object.color_desc else self.bayer_pattern
+            # Bayer 模式（libraw 的 color_desc 命名与 OpenCV 约定差在 3、4 字符顺序，
+            # 如 'RGBG' ≡ 'RGGB'，统一转换为项目约定）
+            color_desc = getattr(self._raw_object, 'color_desc', None)
+            if color_desc is not None:
+                desc = color_desc.decode('utf-8') if isinstance(color_desc, bytes) else str(color_desc)
+                meta['bayer_pattern'] = normalize_bayer_pattern(desc)
 
             # 是否裁剪了感光区域
-            if hasattr(self._raw_object, 'sizes'):
+            sizes = getattr(self._raw_object, 'sizes', None)
+            if sizes is not None:
                 meta['raw_sizes'] = {
-                    'raw_height': self._raw_object.sizes.raw_height,
-                    'raw_width': self._raw_object.sizes.raw_width,
-                    'height': self._raw_object.sizes.height,
-                    'width': self._raw_object.sizes.width,
-                    'top_margin': self._raw_object.sizes.top_margin,
-                    'left_margin': self._raw_object.sizes.left_margin,
+                    'raw_height': sizes.raw_height,
+                    'raw_width': sizes.raw_width,
+                    'height': sizes.height,
+                    'width': sizes.width,
+                    'top_margin': sizes.top_margin,
+                    'left_margin': sizes.left_margin,
                 }
 
         except Exception as e:
@@ -161,6 +167,22 @@ class RAWReader:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
+
+
+def normalize_bayer_pattern(desc: str) -> str:
+    """
+    将 libraw/rawpy 的 color_desc 命名转换为项目约定（OpenCV 风格）。
+    libraw 'RGBG' ≡ 本项目 'RGGB'：两者第 3、4 字符顺序相反。
+    """
+    valid = ('RGGB', 'BGGR', 'GRBG', 'GBRG')
+    desc = (desc or '').strip().upper()
+    if desc in valid:
+        return desc
+    if len(desc) == 4:
+        swapped = desc[0] + desc[1] + desc[3] + desc[2]
+        if swapped in valid:
+            return swapped
+    return 'RGGB'
 
 
 def read_raw_file(file_path: str, bayer_pattern: str = 'RGGB') -> Tuple[np.ndarray, Dict[str, Any]]:
