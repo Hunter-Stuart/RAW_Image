@@ -115,7 +115,22 @@ class ColorCorrector:
         return np.clip(srgb ** gamma, 0, 1)
 
     @staticmethod
-    def simple_tone_map(rgb: np.ndarray, 
+    def filmic_curve(srgb_linear: np.ndarray,
+                     exposure_bias: float = 0.0,
+                     shoulder: float = 1.0) -> np.ndarray:
+        """
+        ACES 风格 filmic S 曲线（Narkowicz 近似）
+        - 暗部提升、高光软滚降、中间调保持对比（晴天差距主因的对应解法）
+        - shoulder 控制曲线强度: 0=线性(无S), 1=标准ACES近似
+        参考: ACES Filmic Tone Mapping Curves (Krzysztof Narkowicz 近似公开实现)
+        """
+        x = np.clip(srgb_linear * (2.0 ** exposure_bias), 0, 1)
+        a, b, c, d, e = 2.51, 0.03, 2.43, 0.59, 0.14
+        f = np.clip((x * (a * x + b)) / (x * (c * x + d) + e), 0, 1)
+        return (1.0 - shoulder) * x + shoulder * f
+
+    @staticmethod
+    def simple_tone_map(rgb: np.ndarray,
                         exposure_bias: float = 0.0,
                         contrast: float = 1.0,
                         brightness: float = 0.0,
@@ -186,13 +201,24 @@ class ColorCorrector:
         # 确保范围 [0, 1]
         srgb = np.clip(srgb, 0, 1)
 
+        # 色调映射方式: 'filmic' 在 Gamma 之前作用于线性域（S曲线与显示编码分离）
+        params = dict(tone_map_params or {})
+        method = params.pop('method', 'linear')
+        if do_tone_map and method == 'filmic':
+            srgb = self.filmic_curve(
+                srgb,
+                exposure_bias=params.get('exposure_bias', 0.0),
+                shoulder=params.get('shoulder', 1.0),
+            )
+            params.pop('exposure_bias', None)
+            params.pop('shoulder', None)
+
         # Gamma
         if do_gamma:
             srgb = self.gamma_correction_srgb_standard(srgb)
 
-        # 色调映射
+        # 色调映射（微调参数，filmic 模式下可选叠加）
         if do_tone_map:
-            params = tone_map_params or {}
             srgb = self.simple_tone_map(srgb, **params)
 
         if srgb.dtype in (np.float32, np.float64):

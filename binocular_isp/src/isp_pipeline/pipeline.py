@@ -103,7 +103,9 @@ class ISPPipeline:
             gamma=srgb_cfg.get('gamma', 2.2),
             do_tone_map=srgb_cfg.get('do_tone_map', True),
             tone_map_params={
+                'method': srgb_cfg.get('tone_method', 'linear'),
                 'exposure_bias': srgb_cfg.get('exposure_bias', 0.0),
+                'shoulder': srgb_cfg.get('shoulder', 1.0),
                 'contrast': srgb_cfg.get('contrast', 1.0),
                 'brightness': srgb_cfg.get('brightness', 0.0),
                 'saturation': srgb_cfg.get('saturation', 1.0),

@@ -131,6 +131,10 @@ def main():
                         help='管线对比度(色调映射contrast参数)，调优实验用')
     parser.add_argument('--sharpen-strength', type=float, default=0.0,
                         help='管线unsharp锐化强度(>0开启)，调优实验用')
+    parser.add_argument('--saturation', type=float, default=1.0,
+                        help='色调映射饱和度(晴天调优用)')
+    parser.add_argument('--tone-method', default='linear', choices=['linear', 'filmic'],
+                        help='色调映射方式: linear=标准伽马(默认), filmic=ACES风格S曲线')
     parser.add_argument('--zip', default=str(project_root.parent / 'AODRaw_test.zip'))
     parser.add_argument('--ann', default=str(project_root.parent / 'AODRaw_annotations/AODRaw/annotations/test_annotations.json'))
     parser.add_argument('--weights', default=str(project_root / 'data/yolov8n.pt'))
@@ -178,7 +182,9 @@ def main():
     if zf is None:
         print('  ! 未找到测试zip, 使用 work 目录中已提取的 ARW/JPG')
     pipeline = ISPPipeline({'isp': {'srgb': {'exposure_bias': args.exposure_bias,
-                                             'contrast': args.contrast},
+                                             'contrast': args.contrast,
+                                             'saturation': args.saturation,
+                                             'tone_method': args.tone_method},
                                     'sharpen': {'method': 'unsharp' if args.sharpen_strength > 0 else 'none',
                                                 'strength': args.sharpen_strength}},
                             'output': {'width': 1280, 'height': 720, 'bit_depth': 8}})
@@ -202,7 +208,7 @@ def main():
                 continue
 
             # A路: 本项目管线 (改进算法)，输出缓存以便重跑时复用
-            cache_a = work / f'A_b{args.exposure_bias}c{args.contrast}s{args.sharpen_strength}' / f'{stem}.png'
+            cache_a = work / f'A_b{args.exposure_bias}c{args.contrast}s{args.sharpen_strength}m{args.tone_method}e{args.exposure_bias}c{args.contrast}sat{args.saturation}' / f'{stem}.png'
             cache_a.parent.mkdir(parents=True, exist_ok=True)
             if cache_a.exists():
                 img_a = cv2.imread(str(cache_a))
