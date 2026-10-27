@@ -158,7 +158,33 @@ class ISPPipeline:
         color_matrix = None
         if 'rgb_xyz_matrix' in metadata:
             M = np.array(metadata['rgb_xyz_matrix'], dtype=np.float64)
-            color_matrix = np.linalg.inv(M).astype(np.float32)
+            cam2xyz = np.linalg.inv(M)
+
+            # Bradford 色适应（晴天色彩精调）：用灰世界估计场景光照，
+            # 把色彩链从场景白点适配到 D65，alpha 控制强度防止极端场景过度校正
+            brad_cfg = self.config.get('isp', {}).get('srgb', {}).get('bradford', {})
+            if brad_cfg and brad_cfg.get('enabled', False):
+                gains = self.preprocessor.compute_wb_gains_from_gray_world(
+                    raw_data, bayer_pattern)
+                g_r = float(gains[0] / max(gains[1], 1e-6))
+                g_b = float(gains[3] / max(gains[1], 1e-6))
+                # 保护机制: 灰世界增益偏离中性超过阈值 或 场景过暗（暗光/雨雾等
+                # 极端光照）时跳过色适应，避免破坏困难场景——约束"不折损其他条件"由构造保证
+                log_mag = abs(float(np.log2(max(g_r, 1e-3)))) + \
+                          abs(float(np.log2(max(g_b, 1e-3))))
+                raw_bright = float(np.mean(raw_data)) / max(
+                    self.preprocessor.white_level or 65535.0, 1.0)
+                if (log_mag < brad_cfg.get('max_gain_stop', 0.8)
+                        and raw_bright > brad_cfg.get('min_brightness', 0.2)):
+                    illuminant_rgb = np.array([1.0 / max(g_r, 1e-3), 1.0,
+                                               1.0 / max(g_b, 1e-3)])
+                    illum_xyz = cam2xyz @ illuminant_rgb
+                    illum_xyz /= max(illum_xyz[1], 1e-6)
+                    m_brad = ColorCorrector.bradford_matrix(
+                        illum_xyz, alpha=brad_cfg.get('alpha', 0.5))
+                    cam2xyz = m_brad @ cam2xyz
+
+            color_matrix = cam2xyz.astype(np.float32)
 
         # 优先使用相机白平衡乘数（rgb_xyz_matrix 按相机WB后的值定义），缺失时回退灰世界
         if wb_gains is None and 'camera_wb' in metadata:

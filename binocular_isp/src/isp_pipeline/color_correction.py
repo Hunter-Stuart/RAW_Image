@@ -23,6 +23,38 @@ class ColorCorrector:
         [ 0.0556434, -0.2040259,  1.0572252],
     ])
 
+    # D65 白点 (XYZ, 归一化 Y=1)
+    D65_XYZ = np.array([0.95047, 1.0, 1.08883])
+
+    # Bradford 锥响应矩阵及其逆
+    _M_BRADFORD = np.array([
+        [0.8951, 0.2664, -0.1614],
+        [-0.7502, 1.7135, 0.0367],
+        [0.0389, -0.0685, 1.0296],
+    ])
+    _M_BRADFORD_INV = np.array([
+        [0.9870, -0.1471, 0.1600],
+        [0.4323, 0.5184, 0.0493],
+        [-0.0085, 0.0400, 0.9685],
+    ])
+
+    @classmethod
+    def bradford_matrix(cls, src_xyz, dst_xyz=None, alpha=1.0):
+        """
+        Bradford 色适应矩阵: 把 src 白点下的颜色映射到 dst 白点(默认 D65)下
+        alpha: 部分适应强度 (0=不校正, 1=完全校正)，用于防止极端场景过度校正
+        参考: Bradford chromatic adaptation (Lindbloom 公开实现 / CIE 色适应标准)
+        """
+        dst_xyz = cls.D65_XYZ if dst_xyz is None else np.asarray(dst_xyz, dtype=np.float64)
+        src = np.asarray(src_xyz, dtype=np.float64)
+        s = cls._M_BRADFORD @ src
+        d = cls._M_BRADFORD @ dst_xyz
+        diag = np.diag(d / s)
+        m_full = cls._M_BRADFORD_INV @ diag @ cls._M_BRADFORD
+        if alpha >= 1.0:
+            return m_full
+        return alpha * m_full + (1.0 - alpha) * np.eye(3)
+
     def __init__(self, color_matrix: Optional[np.ndarray] = None):
         """
         参数:
@@ -211,7 +243,7 @@ class ColorCorrector:
                 shoulder=params.get('shoulder', 1.0),
             )
             params.pop('exposure_bias', None)
-            params.pop('shoulder', None)
+        params.pop('shoulder', None)
 
         # Gamma
         if do_gamma:
