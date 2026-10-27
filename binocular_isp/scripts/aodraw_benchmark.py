@@ -171,10 +171,12 @@ def main():
         selected[cond] = picked
         print(f'  {cond}: 选中 {len(picked)} 张')
 
-    # ---------- 2. 从 zip 提取对应 ARW+JPG ----------
+    # ---------- 2. 从 zip 提取对应 ARW+JPG（zip 缺失时依赖已提取文件） ----------
     print('[2] 提取图像...')
-    zf = zipfile.ZipFile(args.zip)
-    members = set(zf.namelist())
+    zf = zipfile.ZipFile(args.zip) if Path(args.zip).exists() else None
+    members = set(zf.namelist()) if zf else set()
+    if zf is None:
+        print('  ! 未找到测试zip, 使用 work 目录中已提取的 ARW/JPG')
     pipeline = ISPPipeline({'isp': {'srgb': {'exposure_bias': args.exposure_bias,
                                              'contrast': args.contrast},
                                     'sharpen': {'method': 'unsharp' if args.sharpen_strength > 0 else 'none',
@@ -183,15 +185,15 @@ def main():
 
     metrics = {}
     for cond, imgs in selected.items():
-        m = {'iq': {'A': defaultdict(list), 'B': defaultdict(list)},
-             'psnr': [], 'ssim': [],
-             'det': {'A': defaultdict(list), 'B': defaultdict(list)},
+        m = {'iq': {'A': defaultdict(list), 'B': defaultdict(list), 'B2': defaultdict(list)},
+             'psnr': [], 'ssim': [], 'psnr_b2': [], 'ssim_b2': [],
+             'det': {'A': defaultdict(list), 'B': defaultdict(list), 'B2': defaultdict(list)},
              'gt': defaultdict(list)}
         for img in imgs:
             stem = Path(img['file_name']).stem
             for ext in ('.ARW', '.JPG'):
                 member = f'AODRaw/images/{stem}{ext}'
-                if member in members:
+                if zf is not None and member in members and not (work / member).exists():
                     zf.extract(member, work)
             raw_path = work / 'AODRaw/images' / f'{stem}.ARW'
             jpg_path = work / 'AODRaw/images' / f'{stem}.JPG'
@@ -210,18 +212,28 @@ def main():
                 cv2.imwrite(str(cache_a), img_a)
             # B路: 相机直出 JPG (常规算法)
             img_b = cv2.resize(cv2.imread(str(jpg_path)), (1280, 720))
+            # B2路: rawpy 默认后处理管线（LibRaw 经典开源 RAW 处理器）
+            import rawpy
+            with rawpy.imread(str(raw_path)) as raw:
+                post = raw.postprocess(use_camera_wb=True,
+                                       output_color=rawpy.ColorSpace.sRGB, output_bps=8)
+            img_b2 = cv2.resize(cv2.cvtColor(post, cv2.COLOR_RGB2BGR), (1280, 720))
 
             # 图像质量指标
-            iqa, iqb = iq_metrics(img_a), iq_metrics(img_b)
+            iqa, iqb, iqb2 = iq_metrics(img_a), iq_metrics(img_b), iq_metrics(img_b2)
             for k, v in iqa.items():
                 m['iq']['A'][k].append(v)
             for k, v in iqb.items():
                 m['iq']['B'][k].append(v)
+            for k, v in iqb2.items():
+                m['iq']['B2'][k].append(v)
             ps, ss = psnr_ssim(img_a, img_b)
             m['psnr'].append(ps); m['ssim'].append(ss)
+            ps2, ss2 = psnr_ssim(img_b2, img_b)
+            m['psnr_b2'].append(ps2); m['ssim_b2'].append(ss2)
 
-            # 检测（A/B 各跑一次）
-            for side, im in (('A', img_a), ('B', img_b)):
+            # 检测（A/B/B2 各跑一次）
+            for side, im in (('A', img_a), ('B', img_b), ('B2', img_b2)):
                 r = model.predict(im, conf=0.05, verbose=False)[0]
                 boxes = r.boxes
                 if boxes is not None and len(boxes):
@@ -252,25 +264,27 @@ def main():
     summary = {}
     for cond, m in metrics.items():
         iq = {side: {k: float(np.mean(v)) if v else 0.0
-                     for k, v in m['iq'][side].items()} for side in ('A', 'B')}
+                     for k, v in m['iq'][side].items()} for side in ('A', 'B', 'B2')}
         ap = {}
-        for side in ('A', 'B'):
+        for side in ('A', 'B', 'B2'):
             aps = [compute_ap50(m['det'][side].get(c, []), gts)
                    for c, gts in m['gt'].items() if gts]
             ap[side] = float(np.mean(aps)) if aps else 0.0
         summary[cond] = {
-            'iq_A': iq['A'], 'iq_B': iq['B'],
+            'iq_A': iq['A'], 'iq_B': iq['B'], 'iq_B2': iq['B2'],
             'psnr_mean': float(np.mean(m['psnr'])) if m['psnr'] else 0.0,
             'ssim_mean': float(np.mean(m['ssim'])) if m['ssim'] else 0.0,
-            'mAP50_A': ap['A'], 'mAP50_B': ap['B'],
+            'psnr_b2_mean': float(np.mean(m['psnr_b2'])) if m['psnr_b2'] else 0.0,
+            'ssim_b2_mean': float(np.mean(m['ssim_b2'])) if m['ssim_b2'] else 0.0,
+            'mAP50_A': ap['A'], 'mAP50_B': ap['B'], 'mAP50_B2': ap['B2'],
             'n_images': len(m['psnr']),
         }
         s = summary[cond]
         print(f"\n  === {cond} ({s['n_images']}张) ===")
-        print(f"    亮度  A={s['iq_A']['brightness']:.1f} B={s['iq_B']['brightness']:.1f}"
-              f" | 清晰度 A={s['iq_A']['sharpness']:.1f} B={s['iq_B']['sharpness']:.1f}")
-        print(f"    PSNR={s['psnr_mean']:.1f}dB SSIM={s['ssim_mean']:.3f}")
-        print(f"    mAP50  A(改进)={s['mAP50_A']:.3f}  B(相机JPG)={s['mAP50_B']:.3f}")
+        print(f"    亮度  A={s['iq_A']['brightness']:.1f} B={s['iq_B']['brightness']:.1f} B2={s['iq_B2']['brightness']:.1f}"
+              f" | 清晰度 A={s['iq_A']['sharpness']:.1f} B={s['iq_B']['sharpness']:.1f} B2={s['iq_B2']['sharpness']:.1f}")
+        print(f"    PSNR  A={s['psnr_mean']:.1f}dB B2={s['psnr_b2_mean']:.1f}dB | SSIM A={s['ssim_mean']:.3f} B2={s['ssim_b2_mean']:.3f}")
+        print(f"    mAP50  A(改进)={s['mAP50_A']:.3f}  B(相机JPG)={s['mAP50_B']:.3f}  B2(rawpy默认)={s['mAP50_B2']:.3f}")
 
     json.dump(summary, open(out / 'metrics.json', 'w', encoding='utf-8'),
               indent=2, ensure_ascii=False)
@@ -287,35 +301,45 @@ def main():
     x = np.arange(len(conds))
     width = 0.35
 
-    # 图1: 图像质量指标 2x2
-    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+    # 图1: 图像质量指标 2x2（三方对比）
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
     for ax, key, title in zip(axes.flat,
                               ['brightness', 'contrast', 'sharpness', 'noise'],
                               ['亮度(均值)', '对比度(标准差)', '清晰度(Laplacian方差)', '噪声(高频残差std)']):
         va = [summary[c]['iq_A'][key] for c in conds]
         vb = [summary[c]['iq_B'][key] for c in conds]
-        ax.bar(x - width / 2, va, width, label='改进算法(本管线)')
-        ax.bar(x + width / 2, vb, width, label='常规算法(相机JPG)')
-        ax.set_xticks(x); ax.set_xticklabels(conds); ax.set_title(title); ax.legend()
-    fig.suptitle('不同条件下图像质量指标对比', fontsize=14)
+        vb2 = [summary[c]['iq_B2'][key] for c in conds]
+        w = 0.27
+        ax.bar(x - w, va, w, label='自研管线(A)')
+        ax.bar(x, vb, w, label='相机JPG(B)')
+        ax.bar(x + w, vb2, w, label='rawpy默认(B2)')
+        ax.set_xticks(x); ax.set_xticklabels(conds); ax.set_title(title); ax.legend(fontsize=8)
+    fig.suptitle('三方对比: 自研管线 vs 相机JPG vs rawpy默认', fontsize=14)
     fig.tight_layout()
     fig.savefig(out / 'chart_iq.png', dpi=120)
     plt.close(fig)
 
-    # 图2: 检测 mAP50 + PSNR/SSIM
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+    # 图2: 检测 mAP50 + PSNR/SSIM（三方）
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
     va = [summary[c]['mAP50_A'] for c in conds]
     vb = [summary[c]['mAP50_B'] for c in conds]
-    axes[0].bar(x - width / 2, va, width, label='改进算法(本管线)')
-    axes[0].bar(x + width / 2, vb, width, label='常规算法(相机JPG)')
+    vb2 = [summary[c]['mAP50_B2'] for c in conds]
+    w = 0.27
+    axes[0].bar(x - w, va, w, label='自研管线(A)')
+    axes[0].bar(x, vb, w, label='相机JPG(B)')
+    axes[0].bar(x + w, vb2, w, label='rawpy默认(B2)')
     axes[0].set_xticks(x); axes[0].set_xticklabels(conds)
-    axes[0].set_title('检测 mAP50 对比'); axes[0].legend()
+    axes[0].set_title('检测 mAP50 对比'); axes[0].legend(fontsize=8)
     vp = [summary[c]['psnr_mean'] for c in conds]
+    vp2 = [summary[c]['psnr_b2_mean'] for c in conds]
     vs = [summary[c]['ssim_mean'] for c in conds]
-    axes[1].bar(x - width / 2, vp, width, label='PSNR(dB)')
-    axes[1].bar(x + width / 2, vs, width, label='SSIM')
+    vs2 = [summary[c]['ssim_b2_mean'] for c in conds]
+    axes[1].bar(x - w, vp, w, label='PSNR A(dB)')
+    axes[1].bar(x, vp2, w, label='PSNR B2(dB)')
+    axes[1].plot(x, vs, 'o-', color='green', label='SSIM A')
+    axes[1].plot(x, vs2, 's--', color='orange', label='SSIM B2')
     axes[1].set_xticks(x); axes[1].set_xticklabels(conds)
-    axes[1].set_title('与相机JPG的相似度'); axes[1].legend()
+    axes[1].set_title('与相机JPG的相似度'); axes[1].legend(fontsize=8)
     fig.tight_layout()
     fig.savefig(out / 'chart_detection.png', dpi=120)
     plt.close(fig)
