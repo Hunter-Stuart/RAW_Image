@@ -87,8 +87,8 @@ def main():
     fig.savefig(out_dir / 'taisp_align.png', dpi=130)
     plt.close(fig)
 
-    # CSV 表
-    with open(out_dir / 'fourway_table.csv', 'w', encoding='utf-8') as f:
+    # CSV 表（utf-8-sig 带 BOM，Excel 双击打开中文不乱码）
+    with open(out_dir / 'fourway_table.csv', 'w', encoding='utf-8-sig', newline='') as f:
         f.write('条件,' + ','.join(l for _, l in METHODS) + '\n')
         for c in CONDS:
             f.write(c + ',' + ','.join(f"{aligned[c][k]:.3f}" for k, _ in METHODS) + '\n')
