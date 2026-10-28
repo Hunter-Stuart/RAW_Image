@@ -1,21 +1,6 @@
 #!/usr/bin/env python
 """
 AODRaw 条件对比基准测试
-
-对比"本项目 ISP 管线（改进算法）"与"相机直出 JPG（常规算法）"在
-不同拍摄条件（晴天/暗光/雾天/雨天）下的表现：
-  1. 图像质量指标: 亮度/对比度/清晰度/噪声 + PSNR/SSIM（以相机JPG为参考）
-  2. 目标检测指标: 按条件统计 mAP50（YOLOv8n 在两种图像上的检测对比）
-  3. 可视化: 指标柱状图 + 检测结果并排图格
-
-用法:
-  python scripts/aodraw_benchmark.py [--per-cond 10] [--zip AODRaw_test.zip]
-
-说明:
-  - AODRaw 无"阴天"标签，其 9 种条件为 光照(白天/暗光)×天气(晴/雨/雾)+室内外，
-    阴天用雨天(rain)近似
-  - YOLOv8n 为 COCO 预训练权重，仅在与 COCO 类别同名(≈30/63类)的类别上评测
-  - 输出: data/output/benchmark/
 """
 
 import argparse
@@ -28,6 +13,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import torch
+torch.backends.cudnn.enabled = False  # 兼容服务器 torch2.4 与 cuDNN9.2 错配
 
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root / 'src'))
@@ -138,6 +125,8 @@ def main():
                         help='Bradford适应强度(0~1, 防极端场景过度校正)')
     parser.add_argument('--tone-method', default='linear', choices=['linear', 'filmic'],
                         help='色调映射方式: linear=标准伽马(默认), filmic=ACES风格S曲线')
+    parser.add_argument('--b3-dir', default=None,
+                        help='第三方ISP输出目录(如TA-ISP推理结果), 参与四方对比')
     parser.add_argument('--zip', default=str(project_root.parent / 'AODRaw_test.zip'))
     parser.add_argument('--ann', default=str(project_root.parent / 'AODRaw_annotations/AODRaw/annotations/test_annotations.json'))
     parser.add_argument('--weights', default=str(project_root / 'data/yolov8n.pt'))
@@ -196,9 +185,10 @@ def main():
 
     metrics = {}
     for cond, imgs in selected.items():
-        m = {'iq': {'A': defaultdict(list), 'B': defaultdict(list), 'B2': defaultdict(list)},
+        # [已修复] 初始化字典时加入 'B3'
+        m = {'iq': {'A': defaultdict(list), 'B': defaultdict(list), 'B2': defaultdict(list), 'B3': defaultdict(list)},
              'psnr': [], 'ssim': [], 'psnr_b2': [], 'ssim_b2': [],
-             'det': {'A': defaultdict(list), 'B': defaultdict(list), 'B2': defaultdict(list)},
+             'det': {'A': defaultdict(list), 'B': defaultdict(list), 'B2': defaultdict(list), 'B3': defaultdict(list)},
              'gt': defaultdict(list)}
         for img in imgs:
             stem = Path(img['file_name']).stem
@@ -230,21 +220,27 @@ def main():
                                        output_color=rawpy.ColorSpace.sRGB, output_bps=8)
             img_b2 = cv2.resize(cv2.cvtColor(post, cv2.COLOR_RGB2BGR), (1280, 720))
 
+            # B3路: 第三方ISP输出（如TA-ISP），可选
+            img_b3 = None
+            if args.b3_dir:
+                b3_path = Path(args.b3_dir) / f'{stem}.png'
+                img_b3 = cv2.imread(str(b3_path)) if b3_path.exists() else None
+
+            variants = [('A', img_a), ('B', img_b), ('B2', img_b2)]
+            if img_b3 is not None:
+                variants.append(('B3', img_b3))
+
             # 图像质量指标
-            iqa, iqb, iqb2 = iq_metrics(img_a), iq_metrics(img_b), iq_metrics(img_b2)
-            for k, v in iqa.items():
-                m['iq']['A'][k].append(v)
-            for k, v in iqb.items():
-                m['iq']['B'][k].append(v)
-            for k, v in iqb2.items():
-                m['iq']['B2'][k].append(v)
+            for side, im in variants:
+                for k, v in iq_metrics(im).items():
+                    m['iq'][side][k].append(v)
             ps, ss = psnr_ssim(img_a, img_b)
             m['psnr'].append(ps); m['ssim'].append(ss)
             ps2, ss2 = psnr_ssim(img_b2, img_b)
             m['psnr_b2'].append(ps2); m['ssim_b2'].append(ss2)
 
-            # 检测（A/B/B2 各跑一次）
-            for side, im in (('A', img_a), ('B', img_b), ('B2', img_b2)):
+            # 检测（每路各跑一次）
+            for side, im in variants:
                 r = model.predict(im, conf=0.05, verbose=False)[0]
                 boxes = r.boxes
                 if boxes is not None and len(boxes):
@@ -255,7 +251,6 @@ def main():
                         m['det'][side][c].append((float(s), *bb.tolist()))
 
             # 真值（映射后的 COCO 类别 id）。
-            # 注意: 标注 bbox 是原图(6000x4000)坐标，需缩放到 1280x720 检测空间
             ow = img.get('width', 6000)
             oh = img.get('height', 4000)
             sx, sy = 1280.0 / ow, 720.0 / oh
@@ -274,28 +269,29 @@ def main():
     print('[3] 汇总指标...')
     summary = {}
     for cond, m in metrics.items():
+        sides = [s for s in m['iq'] if m['iq'][s]]
         iq = {side: {k: float(np.mean(v)) if v else 0.0
-                     for k, v in m['iq'][side].items()} for side in ('A', 'B', 'B2')}
+                     for k, v in m['iq'][side].items()} for side in sides}
         ap = {}
-        for side in ('A', 'B', 'B2'):
+        for side in sides:
             aps = [compute_ap50(m['det'][side].get(c, []), gts)
                    for c, gts in m['gt'].items() if gts]
             ap[side] = float(np.mean(aps)) if aps else 0.0
         summary[cond] = {
-            'iq_A': iq['A'], 'iq_B': iq['B'], 'iq_B2': iq['B2'],
+            'iq_A': iq.get('A', {}), 'iq_B': iq.get('B', {}), 'iq_B2': iq.get('B2', {}),
+            'iq_B3': iq.get('B3', {}),
             'psnr_mean': float(np.mean(m['psnr'])) if m['psnr'] else 0.0,
             'ssim_mean': float(np.mean(m['ssim'])) if m['ssim'] else 0.0,
             'psnr_b2_mean': float(np.mean(m['psnr_b2'])) if m['psnr_b2'] else 0.0,
             'ssim_b2_mean': float(np.mean(m['ssim_b2'])) if m['ssim_b2'] else 0.0,
-            'mAP50_A': ap['A'], 'mAP50_B': ap['B'], 'mAP50_B2': ap['B2'],
+            'mAP50_A': ap.get('A', 0.0), 'mAP50_B': ap.get('B', 0.0),
+            'mAP50_B2': ap.get('B2', 0.0), 'mAP50_B3': ap.get('B3', 0.0),
             'n_images': len(m['psnr']),
         }
         s = summary[cond]
         print(f"\n  === {cond} ({s['n_images']}张) ===")
-        print(f"    亮度  A={s['iq_A']['brightness']:.1f} B={s['iq_B']['brightness']:.1f} B2={s['iq_B2']['brightness']:.1f}"
-              f" | 清晰度 A={s['iq_A']['sharpness']:.1f} B={s['iq_B']['sharpness']:.1f} B2={s['iq_B2']['sharpness']:.1f}")
-        print(f"    PSNR  A={s['psnr_mean']:.1f}dB B2={s['psnr_b2_mean']:.1f}dB | SSIM A={s['ssim_mean']:.3f} B2={s['ssim_b2_mean']:.3f}")
-        print(f"    mAP50  A(改进)={s['mAP50_A']:.3f}  B(相机JPG)={s['mAP50_B']:.3f}  B2(rawpy默认)={s['mAP50_B2']:.3f}")
+        print(f"    mAP50  A(自研)={s['mAP50_A']:.3f}  B(相机JPG)={s['mAP50_B']:.3f}  "
+              f"B2(rawpy默认)={s['mAP50_B2']:.3f}  B3(TA-ISP)={s['mAP50_B3']:.3f}")
 
     json.dump(summary, open(out / 'metrics.json', 'w', encoding='utf-8'),
               indent=2, ensure_ascii=False)
@@ -330,23 +326,29 @@ def main():
     fig.savefig(out / 'chart_iq.png', dpi=120)
     plt.close(fig)
 
-    # 图2: 检测 mAP50 + PSNR/SSIM（三方）
-    fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
+    # 图2: 检测 mAP50 + PSNR/SSIM（四方）
+    fig, axes = plt.subplots(1, 2, figsize=(15, 4.5))
     va = [summary[c]['mAP50_A'] for c in conds]
     vb = [summary[c]['mAP50_B'] for c in conds]
     vb2 = [summary[c]['mAP50_B2'] for c in conds]
-    w = 0.27
-    axes[0].bar(x - w, va, w, label='自研管线(A)')
-    axes[0].bar(x, vb, w, label='相机JPG(B)')
-    axes[0].bar(x + w, vb2, w, label='rawpy默认(B2)')
+    vb3 = [summary[c]['mAP50_B3'] for c in conds]
+    
+    w = 0.2
+    axes[0].bar(x - 1.5*w, va, w, label='自研管线(A)')
+    axes[0].bar(x - 0.5*w, vb, w, label='相机JPG(B)')
+    axes[0].bar(x + 0.5*w, vb2, w, label='rawpy默认(B2)')
+    axes[0].bar(x + 1.5*w, vb3, w, label='TA-ISP(B3)')
     axes[0].set_xticks(x); axes[0].set_xticklabels(conds)
-    axes[0].set_title('检测 mAP50 对比'); axes[0].legend(fontsize=8)
+    axes[0].set_title('检测 mAP50 对比 (四方)'); axes[0].legend(fontsize=8)
+    
     vp = [summary[c]['psnr_mean'] for c in conds]
     vp2 = [summary[c]['psnr_b2_mean'] for c in conds]
     vs = [summary[c]['ssim_mean'] for c in conds]
     vs2 = [summary[c]['ssim_b2_mean'] for c in conds]
-    axes[1].bar(x - w, vp, w, label='PSNR A(dB)')
-    axes[1].bar(x, vp2, w, label='PSNR B2(dB)')
+    
+    w2 = 0.35
+    axes[1].bar(x - w2/2, vp, w2, label='PSNR A(dB)')
+    axes[1].bar(x + w2/2, vp2, w2, label='PSNR B2(dB)')
     axes[1].plot(x, vs, 'o-', color='green', label='SSIM A')
     axes[1].plot(x, vs2, 's--', color='orange', label='SSIM B2')
     axes[1].set_xticks(x); axes[1].set_xticklabels(conds)
